@@ -1,122 +1,442 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+import React, { useState, useEffect, useRef, useCallback } from "react";
 
-function App() {
-  const [count, setCount] = useState(0)
+// ---- Placeholder word bank entry (real bank wired in later) ----
+const DEMO_WORD = {
+  secretWord: "cat",
+  acceptableGuesses: ["cat", "kitten", "kitty"],
+  category: "animals",
+  shapes: [
+    { type: "circle", cx: 200, cy: 230, r: 55, order: 1 },
+    { type: "circle", cx: 200, cy: 140, r: 38, order: 2 },
+    { type: "polygon", points: "168,112 178,72 196,118", order: 3 },
+    { type: "polygon", points: "232,112 222,72 204,118", order: 4 },
+    { type: "line", x1: 165, y1: 150, x2: 95, y2: 138, order: 5 },
+    { type: "line", x1: 165, y1: 158, x2: 95, y2: 165, order: 6 },
+    { type: "line", x1: 235, y1: 150, x2: 305, y2: 138, order: 7 },
+    { type: "line", x1: 235, y1: 158, x2: 305, y2: 165, order: 8 },
+  ],
+};
 
-  return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+const REVEAL_INTERVAL_MS = 4000;
+const MAX_HINTS = DEMO_WORD.shapes.length;
 
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+function normalize(str) {
+  return str.trim().toLowerCase();
 }
 
-export default App
+// Levenshtein distance for fuzzy matching (handles typos)
+function levenshtein(a, b) {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+
+  const prev = new Array(n + 1);
+  const curr = new Array(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(
+        prev[j] + 1, // deletion
+        curr[j - 1] + 1, // insertion
+        prev[j - 1] + cost // substitution
+      );
+    }
+    for (let j = 0; j <= n; j++) prev[j] = curr[j];
+  }
+  return prev[n];
+}
+
+// Allows small typos; tolerance scales gently with word length
+function isFuzzyMatch(guess, target) {
+  const g = normalize(guess);
+  const t = normalize(target);
+  if (g === t) return true;
+  const maxLen = Math.max(g.length, t.length);
+  if (maxLen <= 3) return false; // too short for fuzzy slack, require exact
+  const distance = levenshtein(g, t);
+  const tolerance = maxLen <= 5 ? 1 : maxLen <= 8 ? 2 : 3;
+  return distance <= tolerance;
+}
+
+function ShapeSVGElement({ shape, isNew }) {
+  const common = {
+    stroke: "#2B2B2E",
+    strokeWidth: 4,
+    fill: "none",
+    strokeLinecap: "round",
+    strokeLinejoin: "round",
+    className: isNew ? "stroke-draw" : "",
+  };
+
+  if (shape.type === "circle") {
+    return <circle cx={shape.cx} cy={shape.cy} r={shape.r} {...common} />;
+  }
+  if (shape.type === "polygon") {
+    return <polygon points={shape.points} {...common} />;
+  }
+  if (shape.type === "line") {
+    return (
+      <line x1={shape.x1} y1={shape.y1} x2={shape.x2} y2={shape.y2} {...common} />
+    );
+  }
+  if (shape.type === "ellipse") {
+    return <ellipse cx={shape.cx} cy={shape.cy} rx={shape.rx} ry={shape.ry} {...common} />;
+  }
+  return null;
+}
+
+export default function SketchGuess() {
+  const [revealedCount, setRevealedCount] = useState(1);
+  const [guess, setGuess] = useState("");
+  const [status, setStatus] = useState("playing"); // playing | won | revealed
+  const [feedback, setFeedback] = useState(null); // {type, text}
+  const [timeLeft, setTimeLeft] = useState(REVEAL_INTERVAL_MS / 1000);
+  const [wrongGuesses, setWrongGuesses] = useState([]);
+  const inputRef = useRef(null);
+
+  const word = DEMO_WORD;
+  const visibleShapes = word.shapes.filter((s) => s.order <= revealedCount);
+  const latestOrder = revealedCount;
+
+  // Auto-reveal timer
+  useEffect(() => {
+    if (status !== "playing") return;
+    if (revealedCount >= MAX_HINTS) {
+      setStatus("revealed");
+      return;
+    }
+
+    const tick = setInterval(() => {
+      setTimeLeft((t) => {
+        if (t <= 1) return REVEAL_INTERVAL_MS / 1000;
+        return t - 1;
+      });
+    }, 1000);
+
+    const reveal = setTimeout(() => {
+      setRevealedCount((c) => Math.min(c + 1, MAX_HINTS));
+      setTimeLeft(REVEAL_INTERVAL_MS / 1000);
+    }, REVEAL_INTERVAL_MS);
+
+    return () => {
+      clearInterval(tick);
+      clearTimeout(reveal);
+    };
+  }, [revealedCount, status]);
+
+  useEffect(() => {
+    if (status === "playing" && inputRef.current) inputRef.current.focus();
+  }, [status, revealedCount]);
+
+  const handleGuess = useCallback(
+    (e) => {
+      e.preventDefault();
+      if (!guess.trim() || status !== "playing") return;
+      const isCorrect = word.acceptableGuesses.some((g) =>
+        isFuzzyMatch(guess, g)
+      );
+
+      if (isCorrect) {
+        setStatus("won");
+        setFeedback({ type: "won", text: `Got it — it was "${word.secretWord}"!` });
+      } else {
+        setWrongGuesses((prev) => [...prev, guess.trim()]);
+        setFeedback({ type: "wrong", text: "Not quite — keep looking." });
+        setTimeout(() => setFeedback(null), 1400);
+      }
+      setGuess("");
+    },
+    [guess, status, word]
+  );
+
+  const score =
+    status === "won" ? Math.max(10 - (revealedCount - 1) * 2, 1) : 0;
+
+  const restart = () => {
+    setRevealedCount(1);
+    setGuess("");
+    setStatus("playing");
+    setFeedback(null);
+    setTimeLeft(REVEAL_INTERVAL_MS / 1000);
+    setWrongGuesses([]);
+  };
+
+  const progressPct = ((REVEAL_INTERVAL_MS / 1000 - timeLeft) / (REVEAL_INTERVAL_MS / 1000)) * 100;
+
+  return (
+    <div className="page">
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&family=Inter:wght@400;500;600&display=swap');
+
+        * { box-sizing: border-box; }
+
+        .page {
+          min-height: 100vh;
+          width: 100%;
+          background: #FAF7F0;
+          background-image:
+            linear-gradient(#EDE8DC 1px, transparent 1px),
+            linear-gradient(90deg, #EDE8DC 1px, transparent 1px);
+          background-size: 28px 28px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-family: 'Inter', sans-serif;
+          padding: 24px;
+        }
+
+        .card {
+          width: 100%;
+          max-width: 440px;
+          background: #FFFDF8;
+          border: 1.5px solid #2B2B2E;
+          border-radius: 4px;
+          box-shadow: 6px 6px 0 rgba(43,43,46,0.08);
+          padding: 28px 28px 32px;
+        }
+
+        .eyebrow {
+          font-size: 12px;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: #9A958C;
+          font-weight: 600;
+          margin: 0 0 4px;
+        }
+
+        .title {
+          font-family: 'Caveat', cursive;
+          font-size: 40px;
+          font-weight: 700;
+          color: #2B2B2E;
+          margin: 0 0 18px;
+          line-height: 1;
+        }
+
+        .canvas-wrap {
+          background: #FAF7F0;
+          border: 1.5px dashed #D9D3C6;
+          border-radius: 4px;
+          padding: 8px;
+          margin-bottom: 16px;
+        }
+
+        .stroke-draw {
+          stroke-dasharray: 600;
+          stroke-dashoffset: 600;
+          animation: draw 0.9s ease-out forwards;
+        }
+
+        @keyframes draw {
+          to { stroke-dashoffset: 0; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .stroke-draw { animation: none; stroke-dashoffset: 0; }
+        }
+
+        .timer-row {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          margin-bottom: 16px;
+        }
+
+        .timer-label {
+          font-size: 12px;
+          color: #9A958C;
+          font-weight: 500;
+          white-space: nowrap;
+          min-width: 88px;
+        }
+
+        .timer-track {
+          flex: 1;
+          height: 6px;
+          background: #EDE8DC;
+          border-radius: 3px;
+          overflow: hidden;
+        }
+
+        .timer-fill {
+          height: 100%;
+          background: #E2603A;
+          transition: width 1s linear;
+        }
+
+        form.guess-form {
+          display: flex;
+          gap: 8px;
+          margin-bottom: 12px;
+        }
+
+        .guess-input {
+          flex: 1;
+          font-family: 'Inter', sans-serif;
+          font-size: 15px;
+          padding: 11px 14px;
+          border: 1.5px solid #2B2B2E;
+          border-radius: 4px;
+          background: #FFFDF8;
+          color: #2B2B2E;
+          outline: none;
+        }
+
+        .guess-input:focus {
+          outline: 2px solid #E2603A;
+          outline-offset: 1px;
+        }
+
+        .guess-input::placeholder { color: #B8B2A4; }
+
+        .submit-btn {
+          font-family: 'Inter', sans-serif;
+          font-weight: 600;
+          font-size: 14px;
+          padding: 11px 18px;
+          background: #2B2B2E;
+          color: #FAF7F0;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+        }
+
+        .submit-btn:hover { background: #3F3F44; }
+        .submit-btn:disabled { background: #C9C4B7; cursor: not-allowed; }
+
+        .feedback {
+          font-size: 13px;
+          font-weight: 500;
+          margin: 0 0 10px;
+          min-height: 18px;
+        }
+
+        .feedback.wrong { color: #C45B3A; }
+        .feedback.won { color: #5C7251; }
+
+        .meta-row {
+          display: flex;
+          justify-content: space-between;
+          font-size: 12px;
+          color: #9A958C;
+        }
+
+        .result-box {
+          text-align: center;
+          padding: 6px 0 4px;
+        }
+
+        .result-word {
+          font-family: 'Caveat', cursive;
+          font-size: 34px;
+          color: #2B2B2E;
+          margin: 4px 0 6px;
+        }
+
+        .result-sub {
+          font-size: 13px;
+          color: #7A8B6F;
+          margin-bottom: 16px;
+        }
+
+        .restart-btn {
+          font-family: 'Inter', sans-serif;
+          font-weight: 600;
+          font-size: 14px;
+          padding: 10px 20px;
+          background: #E2603A;
+          color: #FFFDF8;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+        }
+        .restart-btn:hover { background: #CC5430; }
+
+        .wrong-list {
+          font-size: 12px;
+          color: #B8B2A4;
+          margin-top: 8px;
+          word-break: break-word;
+        }
+      `}</style>
+
+      <div className="card">
+        <p className="eyebrow">Category · {word.category}</p>
+        <h1 className="title">What am I drawing?</h1>
+
+        <div className="canvas-wrap">
+          <svg viewBox="0 0 400 300" width="100%" height="auto">
+            {visibleShapes.map((shape, i) => (
+              <ShapeSVGElement
+                key={`${shape.type}-${i}`}
+                shape={shape}
+                isNew={shape.order === latestOrder}
+              />
+            ))}
+          </svg>
+        </div>
+
+        {status === "playing" && (
+          <>
+            <div className="timer-row">
+              <span className="timer-label">Next hint in {timeLeft}s</span>
+              <div className="timer-track">
+                <div className="timer-fill" style={{ width: `${progressPct}%` }} />
+              </div>
+            </div>
+
+            <form className="guess-form" onSubmit={handleGuess}>
+              <input
+                ref={inputRef}
+                className="guess-input"
+                type="text"
+                value={guess}
+                onChange={(e) => setGuess(e.target.value)}
+                placeholder="Type your guess..."
+                autoComplete="off"
+              />
+              <button className="submit-btn" type="submit" disabled={!guess.trim()}>
+                Guess
+              </button>
+            </form>
+
+            <p className={`feedback ${feedback?.type || ""}`}>
+              {feedback?.text || "\u00A0"}
+            </p>
+
+            <div className="meta-row">
+              <span>Shapes shown: {revealedCount} / {MAX_HINTS}</span>
+              <span>Wrong guesses: {wrongGuesses.length}</span>
+            </div>
+          </>
+        )}
+
+        {status === "won" && (
+          <div className="result-box">
+            <p className="result-sub">You got it — the word was</p>
+            <p className="result-word">{word.secretWord}</p>
+            <p className="result-sub">Score: {score} / 10</p>
+            <button className="restart-btn" onClick={restart}>
+              Draw another
+            </button>
+          </div>
+        )}
+
+        {status === "revealed" && (
+          <div className="result-box">
+            <p className="result-sub">Here's what it was</p>
+            <p className="result-word">{word.secretWord}</p>
+            <p className="result-sub">That one was tricky — give the next a go</p>
+            <button className="restart-btn" onClick={restart}>
+              Draw another
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
