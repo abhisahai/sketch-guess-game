@@ -1,24 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-
-// ---- Placeholder word bank entry (real bank wired in later) ----
-const DEMO_WORD = {
-  secretWord: "cat",
-  acceptableGuesses: ["cat", "kitten", "kitty"],
-  category: "animals",
-  shapes: [
-    { type: "circle", cx: 200, cy: 230, r: 55, order: 1 },
-    { type: "circle", cx: 200, cy: 140, r: 38, order: 2 },
-    { type: "polygon", points: "168,112 178,72 196,118", order: 3 },
-    { type: "polygon", points: "232,112 222,72 204,118", order: 4 },
-    { type: "line", x1: 165, y1: 150, x2: 95, y2: 138, order: 5 },
-    { type: "line", x1: 165, y1: 158, x2: 95, y2: 165, order: 6 },
-    { type: "line", x1: 235, y1: 150, x2: 305, y2: 138, order: 7 },
-    { type: "line", x1: 235, y1: 158, x2: 305, y2: 165, order: 8 },
-  ],
-};
+import WORD_BANK from "./wordBank.json";
+import { useSemanticMatch } from "./useSemanticMatch";
 
 const REVEAL_INTERVAL_MS = 4000;
-const MAX_HINTS = DEMO_WORD.shapes.length;
 
 function normalize(str) {
   return str.trim().toLowerCase();
@@ -90,6 +74,7 @@ function ShapeSVGElement({ shape, isNew }) {
 }
 
 export default function SketchGuess() {
+  const [wordIndex, setWordIndex] = useState(() => Math.floor(Math.random() * WORD_BANK.length));
   const [revealedCount, setRevealedCount] = useState(1);
   const [guess, setGuess] = useState("");
   const [status, setStatus] = useState("playing"); // playing | won | revealed
@@ -97,8 +82,10 @@ export default function SketchGuess() {
   const [timeLeft, setTimeLeft] = useState(REVEAL_INTERVAL_MS / 1000);
   const [wrongGuesses, setWrongGuesses] = useState([]);
   const inputRef = useRef(null);
+  const { modelStatus, isSemanticMatch } = useSemanticMatch();
 
-  const word = DEMO_WORD;
+  const word = WORD_BANK[wordIndex];
+  const MAX_HINTS = word.shapes.length;
   const visibleShapes = word.shapes.filter((s) => s.order <= revealedCount);
   const latestOrder = revealedCount;
 
@@ -133,12 +120,16 @@ export default function SketchGuess() {
   }, [status, revealedCount]);
 
   const handleGuess = useCallback(
-    (e) => {
+    async (e) => {
       e.preventDefault();
       if (!guess.trim() || status !== "playing") return;
-      const isCorrect = word.acceptableGuesses.some((g) =>
-        isFuzzyMatch(guess, g)
-      );
+
+      // Try semantic AI match first; fall back to fuzzy string match if model isn't ready
+      const semanticResult = await isSemanticMatch(guess, word.acceptableGuesses);
+      const isCorrect =
+        semanticResult !== null
+          ? semanticResult
+          : word.acceptableGuesses.some((g) => isFuzzyMatch(guess, g));
 
       if (isCorrect) {
         setStatus("won");
@@ -150,13 +141,18 @@ export default function SketchGuess() {
       }
       setGuess("");
     },
-    [guess, status, word]
+    [guess, status, word, isSemanticMatch]
   );
 
   const score =
     status === "won" ? Math.max(10 - (revealedCount - 1) * 2, 1) : 0;
 
   const restart = () => {
+    setWordIndex((i) => {
+      let next;
+      do { next = Math.floor(Math.random() * WORD_BANK.length); } while (next === i && WORD_BANK.length > 1);
+      return next;
+    });
     setRevealedCount(1);
     setGuess("");
     setStatus("playing");
@@ -365,7 +361,18 @@ export default function SketchGuess() {
       `}</style>
 
       <div className="card">
-        <p className="eyebrow">Category · {word.category}</p>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+          <p className="eyebrow" style={{ margin: 0 }}>Category · {word.category}</p>
+          <span style={{
+            fontSize: 10, fontFamily: "Inter, sans-serif", fontWeight: 600,
+            letterSpacing: "0.08em", textTransform: "uppercase",
+            padding: "2px 7px", borderRadius: 99,
+            background: modelStatus === "ready" ? "#D4F0D4" : modelStatus === "error" ? "#F5E0DC" : "#EDE8DC",
+            color: modelStatus === "ready" ? "#2A6B2A" : modelStatus === "error" ? "#8B2A1A" : "#7A7368",
+          }}>
+            {modelStatus === "ready" ? "AI guess on" : modelStatus === "error" ? "AI unavailable" : "AI loading…"}
+          </span>
+        </div>
         <h1 className="title">What am I drawing?</h1>
 
         <div className="canvas-wrap">
